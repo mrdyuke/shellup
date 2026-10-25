@@ -185,3 +185,7 @@ command runner), the backup engine (against `t.TempDir()` homes, including the
 restore pre-backup), the fish configuration writer, prompt templates and alias
 rendering. Tests never touch the real user home or run real package manager
 commands.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
