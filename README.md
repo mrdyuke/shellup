@@ -32,6 +32,51 @@ timestamped backup and an explicit confirmation in a bubbletea dialog.
 - Prints a summary at the end listing every file written, every package
   installed and everything that was skipped, with reasons.
 
+## Installation
+
+Three installation methods are available. Pick the one that matches your
+system.
+
+1. Download a pre-built binary (recommended for fresh systems)
+
+If Go is not yet installed on the machine, download a pre-built binary from
+the GitHub Releases page. Binaries are published for Linux `amd64` and
+`arm64` (see the note below on producing them; the process is
+cross-platform only for Linux).
+
+```bash
+# Example for x86_64 Linux
+curl -L -o shellup https://github.com/mrdyuke/shellup/releases/latest/download/shellup-linux-amd64
+chmod +x shellup
+sudo mv shellup /usr/local/bin/
+```
+
+2. Install via `go install` (quickest for Go users)
+
+If Go is already installed, install the latest version directly:
+
+```bash
+go install github.com/mrdyuke/shellup/cmd/shellup@latest
+```
+
+The binary lands in `$GOPATH/bin` or `$HOME/go/bin`; make sure that
+directory is in your `$PATH`.
+
+3. Build from source (for development)
+
+```bash
+git clone https://github.com/mrdyuke/shellup.git
+cd shellup
+go build -o shellup ./cmd/shellup
+sudo mv shellup /usr/local/bin/
+```
+
+Note on cross-platform binaries: release binaries are built for Linux
+`amd64` and `arm64` only. The repository ships `build.sh` in the project
+root, which runs the builds with `CGO_ENABLED=0` for static linking and
+writes both binaries into `dist/`. macOS and Windows targets are out of
+scope by design.
+
 ## Supported distributions and limitations
 
 | Distro        | Package manager | Notes |
