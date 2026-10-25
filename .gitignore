@@ -1,0 +1,4 @@
+/shellup
+/shellup-*
+*.test
+*.out
