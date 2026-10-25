@@ -2,3 +2,4 @@
 /shellup-*
 *.test
 *.out
+/dist/
