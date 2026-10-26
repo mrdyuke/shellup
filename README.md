@@ -18,12 +18,11 @@ timestamped backup and an explicit confirmation in a bubbletea dialog.
 - Installs the required tools: `fish`, `fzf`, `eza`, `bat`, `zoxide`, `btop`,
   plus `starship` when you choose starship as the prompt. All calls announce
   the exact command they are about to run.
-- Configures the prompt from one of four interactive choices:
-  `starship`, `tide` (installed through fisher), a deterministic `custom`
-  prompt generated from four short questions, or `none` (leave the prompt
-  untouched).
-- Offers optional aliases as separate yes/no questions: `cd` to smartcd via
-  zoxide, `cat` to `bat --paging=never`, `ls` to `eza --icons`.
+- Configures the prompt from one of three interactive choices: `starship`,
+  `tide` (installed through fisher), or `none` (leave the prompt untouched).
+- Offers optional aliases as separate yes/no questions: a zoxide-aware `cd`
+  function that falls back to the builtin cd, `cat` to `bat --paging=never`,
+  `ls` to `eza --icons`.
 - Writes everything it owns into a single managed file,
   `~/.config/fish/conf.d/shellup.fish`, regenerated in full on every run.
   Your `config.fish` and any other `conf.d/` files are never modified.
@@ -152,9 +151,6 @@ Two conditions matter:
   `~/.config/fish/conf.d/shellup-tide.fish`; run
   `fish -c 'tide configure'` any time to open the real configurator. Your own
   choices win over the defaults.
-- The custom prompt is a deterministic template based on four answers
-  (Nerd Font icons, git status, light/dark theme, command duration). It is
-  not a full-featured prompt; features are intentionally minimal.
 
 ## Project structure
 
@@ -165,7 +161,7 @@ internal/backup/     Detection, timestamped backups, manifest, restore
 internal/env/        OS release parsing, package manager and AUR detection
 internal/fish/       conf.d/shellup.fish writer, config.fish, /etc/shells, chsh
 internal/pkgmgr/     pacman/apt/dnf/AUR wrapper, declarative package table
-internal/prompt/     starship/tide/custom prompt templates
+internal/prompt/     starship/tide prompt templates
 internal/aliases/    Optional alias questions and statement rendering
 internal/ui/         bubbletea/lipgloss confirm and select dialogs
 ```

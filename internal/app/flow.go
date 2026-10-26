@@ -15,52 +15,18 @@ import (
 	"shellup/internal/ui"
 )
 
-// askPrompt runs the prompt selection dialog plus, for custom, the four
-// deterministic questions. Nothing is written here; selection only.
-func askPrompt(out interface{ Write([]byte) (int, error) }) (prompt.Kind, prompt.CustomAnswers, error) {
+// askPrompt runs the prompt selection dialog. Nothing is written here;
+// selection only.
+func askPrompt() (prompt.Kind, error) {
 	items := make([]ui.Item, 0, len(prompt.Choices))
 	for _, c := range prompt.Choices {
 		items = append(items, ui.Item{Label: string(c.Kind), Description: c.Description})
 	}
 	idx, err := ui.Select("Which prompt should Shellup set up?", items)
 	if err != nil {
-		return prompt.KindNone, prompt.CustomAnswers{}, err
+		return prompt.KindNone, err
 	}
-	kind := prompt.Choices[idx].Kind
-
-	var answers prompt.CustomAnswers
-	if kind == prompt.KindCustom {
-		nerd, err := ui.Confirm("Use Nerd Font icons in the prompt?", "Requires a Nerd Font installed in your terminal.", false)
-		if err != nil {
-			return kind, answers, err
-		}
-		git, err := ui.Confirm("Show git status (branch and dirty marker)?", "Adds a git branch segment; clean repos show only the branch.", true)
-		if err != nil {
-			return kind, answers, err
-		}
-		themeIdx, err := ui.Select("Color theme of the prompt?", []ui.Item{
-			{Label: prompt.ThemeDark, Description: "Colors readable on dark backgrounds"},
-			{Label: prompt.ThemeLight, Description: "Colors readable on light backgrounds"},
-		})
-		if err != nil {
-			return kind, answers, err
-		}
-		duration, err := ui.Confirm("Show command duration?", "Displays fish's CMD_DURATION when the last command took measurable time.", true)
-		if err != nil {
-			return kind, answers, err
-		}
-		theme := prompt.ThemeLight
-		if themeIdx == 0 {
-			theme = prompt.ThemeDark
-		}
-		answers = prompt.CustomAnswers{
-			NerdFontIcons: nerd,
-			GitStatus:     git,
-			Theme:         theme,
-			ShowDuration:  duration,
-		}
-	}
-	return kind, answers, nil
+	return prompt.Choices[idx].Kind, nil
 }
 
 // askAliases asks every optional alias question in canonical order.
@@ -79,7 +45,7 @@ func askAliases() (map[string]bool, error) {
 // configurePrompt performs the file and package side of the prompt choice and
 // appends honest entries to the summary. It returns the init lines for
 // conf.d/shellup.fish.
-func configurePrompt(d Deps, kind prompt.Kind, answers prompt.CustomAnswers, summary *[]string) ([]string, error) {
+func configurePrompt(d Deps, kind prompt.Kind, summary *[]string) ([]string, error) {
 	out := pickOut(d)
 	switch kind {
 	case prompt.KindNone:
@@ -120,21 +86,6 @@ func configurePrompt(d Deps, kind prompt.Kind, answers prompt.CustomAnswers, sum
 			return nil, err
 		}
 		*summary = append(*summary, "written: "+defPath)
-		return nil, nil
-
-	case prompt.KindCustom:
-		content, err := prompt.CustomConfigFileContent(answers)
-		if err != nil {
-			return nil, err
-		}
-		promptPath := filepath.Join(fishHome(d.Home), "conf.d", "shellup-prompt.fish")
-		if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
-			return nil, err
-		}
-		*summary = append(*summary, "written: "+promptPath)
 		return nil, nil
 	}
 	return nil, fmt.Errorf("unknown prompt kind %q", kind)

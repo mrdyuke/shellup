@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"shellup/internal/prompt"
 )
 
 func TestPrintSummary(t *testing.T) {
@@ -60,11 +58,5 @@ func TestNewDepsResolvesBasics(t *testing.T) {
 	}
 	if deps.Runner == nil {
 		t.Fatal("NewDeps must provide an Exec runner")
-	}
-}
-
-func TestThemeConstantsStable(t *testing.T) {
-	if prompt.ThemeDark != "dark" || prompt.ThemeLight != "light" {
-		t.Fatalf("theme constants drifted: %q %q", prompt.ThemeDark, prompt.ThemeLight)
 	}
 }

@@ -112,7 +112,7 @@ func Run(d Deps) ([]string, error) {
 		}
 	}
 
-	promptKind, customAnswers, err := askPrompt(out)
+	promptKind, err := askPrompt()
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func Run(d Deps) ([]string, error) {
 	}
 
 	// Prompt configuration; every written file shows up in the summary.
-	promptLines, err := configurePrompt(d, promptKind, customAnswers, &summary)
+	promptLines, err := configurePrompt(d, promptKind, &summary)
 	if err != nil {
 		return nil, err
 	}

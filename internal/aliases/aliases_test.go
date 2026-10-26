@@ -10,7 +10,7 @@ func TestRenderStatementsInCanonicalOrder(t *testing.T) {
 	chosen := map[string]bool{"cat-bat": true, "cd-zoxide": true, "ls-eza": true}
 	got := RenderStatements(chosen)
 	want := strings.Join([]string{
-		"zoxide init fish --cmd cd | source",
+		CDFallbackFunction(),
 		"alias cat 'bat --paging=never'",
 		"alias ls 'eza --icons'",
 	}, "\n")
@@ -31,6 +31,28 @@ func TestRenderStatementsAllDeclined(t *testing.T) {
 	got := RenderStatements(map[string]bool{"cat-bat": false})
 	if len(got) != 0 && len(got) != 1 {
 		t.Fatalf("nothing chosen must render empty or single hdr only, got %v", got)
+	}
+}
+
+func TestCDFunctionFallback(t *testing.T) {
+	fn := CDFallbackFunction()
+	if !strings.HasPrefix(fn, "function cd ") {
+		t.Fatalf("snippet must define a cd function, got %q", fn)
+	}
+	if !strings.Contains(fn, "builtin cd $HOME") ||
+		!strings.Contains(fn, "prevd") ||
+		!strings.Contains(fn, `test -d "$argv[1]"`) ||
+		!strings.Contains(fn, "zoxide query") {
+		t.Fatal("fallback function must handle home, dash, existing dirs and zoxide")
+	}
+	if !strings.Contains(fn, "dirprev") {
+		t.Fatal("cd override must maintain the dirprev history so prevd keeps working")
+	}
+	if !strings.Contains(fn, "cd: no such file or directory") {
+		t.Fatal("fallback function must print a clear error")
+	}
+	if !strings.Contains(fn, "return 1") {
+		t.Fatal("fallback function must return a non-zero exit status on failure")
 	}
 }
 
