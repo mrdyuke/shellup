@@ -25,8 +25,10 @@ Usage:
   shellup help       Show this help
 
 Security notes:
-  - Existing fish/starship/tide/bat/eza/zoxide configuration is backed up to
-    ~/.config/shellup-backups/<timestamp> before anything is replaced.
+  - The whole ~/.config/fish directory is moved to
+    ~/.config/shellup-backups/<timestamp>/fish before the clean room is
+    created. ~/.config/starship.toml is copied, and the login shell plus the
+    Fisher plugin list are recorded in manifest.json.
   - Every destructive step asks for explicit confirmation in a bubbletea TUI.
   - Shellup-owned fish code lives only in ~/.config/fish/conf.d/shellup.fish.
 `

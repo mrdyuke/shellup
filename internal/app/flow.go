@@ -3,11 +3,14 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"shellup/internal/aliases"
+	"shellup/internal/backup"
 	"shellup/internal/env"
 	"shellup/internal/fish"
 	"shellup/internal/pkgmgr"
@@ -17,23 +20,83 @@ import (
 
 // askPrompt runs the prompt selection dialog. Nothing is written here;
 // selection only.
-func askPrompt() (prompt.Kind, error) {
+func askPrompt(d Deps) (prompt.Kind, error) {
 	items := make([]ui.Item, 0, len(prompt.Choices))
 	for _, c := range prompt.Choices {
 		items = append(items, ui.Item{Label: string(c.Kind), Description: c.Description})
 	}
-	idx, err := ui.Select("Which prompt should Shellup set up?", items)
+	idx, err := d.selectItem("Which prompt should Shellup set up?", items)
 	if err != nil {
 		return prompt.KindNone, err
 	}
 	return prompt.Choices[idx].Kind, nil
 }
 
+// snapshotState captures the login shell and the Fisher plugin list before the
+// fish directory is moved, because Fisher plugins live inside that directory.
+func snapshotState(d Deps) backup.State {
+	state := backup.State{LoginShell: d.loginShell()}
+	if _, err := d.Runner.Probe("fish", "-c", "type -q fisher"); err != nil {
+		return state
+	}
+	state.FisherInstalled = true
+	out, err := d.Runner.Probe("fish", "-c", "fisher list")
+	if err != nil {
+		return state
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			state.FisherPlugins = append(state.FisherPlugins, line)
+		}
+	}
+	return state
+}
+
+// prepareCleanRoom moves the existing fish configuration into a timestamped
+// backup and creates an empty fish directory for Shellup to populate. Nothing
+// is deleted before the user confirms; declining leaves the system untouched.
+func prepareCleanRoom(d Deps, out io.Writer, state backup.State) (string, error) {
+	fishDir := fishHome(d.Home)
+	if _, err := os.Lstat(fishDir); err == nil {
+		ok, cerr := d.confirm(
+			"Delete ~/.config/fish and create a clean environment?",
+			"The current fish configuration is moved to ~/.config/shellup-backups/<timestamp>/fish "+
+				"first, and `shellup restore` puts it back. Nothing from the old configuration is carried over.",
+			false)
+		if cerr != nil {
+			return "", cerr
+		}
+		if !ok {
+			return "", errNoChange
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	dir, manifest, err := backup.Create(d.Home, state)
+	if err != nil {
+		return "", err
+	}
+	// Create already moved the directory away; RemoveAll keeps the guarantee
+	// even when the move fell back to copying.
+	if err := os.RemoveAll(fishDir); err != nil {
+		return dir, fmt.Errorf("remove old fish configuration: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(fishDir, "conf.d"), 0o755); err != nil {
+		return dir, fmt.Errorf("create clean fish configuration: %w", err)
+	}
+	fmt.Fprintf(out, "Previous fish configuration saved at %s\n", dir)
+	if len(manifest.Entries) == 0 {
+		fmt.Fprintln(out, "No existing fish or starship configuration was found; only the shell state was recorded.")
+	}
+	return dir, nil
+}
+
 // askAliases asks every optional alias question in canonical order.
-func askAliases() (map[string]bool, error) {
+func askAliases(d Deps) (map[string]bool, error) {
 	chosen := map[string]bool{}
 	for _, o := range aliases.Options {
-		ok, err := ui.Confirm(o.Question, o.Explanation, o.DefaultYes)
+		ok, err := d.confirm(o.Question, o.Explanation, o.DefaultYes)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +205,7 @@ func ensureAurHelper(d Deps) (string, error) {
 		return helper, nil
 	}
 	fmt.Fprintln(pickOut(d), "No AUR helper (yay or paru) found.")
-	ok, err := ui.Confirm(
+	ok, err := d.confirm(
 		"Install yay-bin from the AUR via git clone and makepkg -si?",
 		"Shellup will run: git clone https://aur.archlinux.org/yay-bin.git && makepkg -si. It needs the base-devel and git packages.",
 		false)
@@ -223,7 +286,7 @@ func offerEzaViaCargo(d Deps, out interface{ Write([]byte) (int, error) }) error
 	if _, err := withLook(d)("cargo"); err != nil {
 		return errors.New("cargo is not installed, so no fallback for eza")
 	}
-	ok, err := ui.Confirm(
+	ok, err := d.confirm(
 		"Install eza via cargo?",
 		"Shellup will run: cargo install --locked eza. This builds eza from source and may take a few minutes.",
 		false)
@@ -248,7 +311,7 @@ func ensureShellsEntry(d Deps, fishPath string, out interface{ Write([]byte) (in
 	if has {
 		return nil
 	}
-	ok, cerr := ui.Confirm(
+	ok, cerr := d.confirm(
 		"Add fish to /etc/shells?",
 		"chsh refuses shells that are not listed in /etc/shells. Shellup will run: sudo tee -a /etc/shells.",
 		true)
@@ -271,7 +334,7 @@ func ensureShellsEntry(d Deps, fishPath string, out interface{ Write([]byte) (in
 // switchShell runs chsh and, on failure, prints the exact manual command and
 // the likely reason.
 func switchShell(d Deps, fishPath string, out interface{ Write([]byte) (int, error) }, summary *[]string) error {
-	ok, err := ui.Confirm(
+	ok, err := d.confirm(
 		"Switch the default login shell to fish with chsh?",
 		fmt.Sprintf("Shellup will run: chsh -s %s. Your password may be requested by PAM.", fishPath),
 		false)

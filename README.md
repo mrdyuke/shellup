@@ -4,8 +4,10 @@ Shellup is an interactive CLI tool that sets up a fish-based developer
 environment: it installs a set of modern shell utilities, configures the
 prompt, offers optional aliases and switches the default login shell.
 
-Shellup is safe by default. Existing configuration is never replaced without a
-timestamped backup and an explicit confirmation in a bubbletea dialog.
+Shellup is safe by default. It works in a clean room: the entire fish
+configuration is moved into a timestamped backup before a fresh environment is
+created, and `shellup restore` puts the original back. Deleting the old
+configuration always requires an explicit confirmation in a bubbletea dialog.
 
 ## What it does
 
@@ -29,9 +31,12 @@ timestamped backup and an explicit confirmation in a bubbletea dialog.
   `zi` and the `PWD` hook, so the optional `cd` function stays in charge. A
   greeting set in your own `config.fish` still wins, because fish loads it
   after `conf.d/`.
-- Writes everything it owns into a single managed file,
-  `~/.config/fish/conf.d/shellup.fish`, regenerated in full on every run.
-  Your `config.fish` and any other `conf.d/` files are never modified.
+- Builds a clean room instead of merging with an existing setup: the whole
+  `~/.config/fish` directory is moved into a timestamped backup, deleted, and
+  recreated empty. Shellup then writes only its own files, including
+  `conf.d/shellup.fish` (regenerated in full on every run) and
+  `conf.d/shellup-tide.fish` when tide is chosen. No file from the previous
+  configuration, including `config.fish`, is copied over.
 - Adds fish to `/etc/shells` (asked first, done via `sudo tee -a`) and offers
   to switch the login shell with `chsh -s /path/to/fish`.
 - Prints a summary at the end listing every file written, every package
@@ -95,24 +100,32 @@ scope by design.
 - On systems with none of pacman/apt/dnf (macOS, NixOS, Windows), Shellup exits
   with a clear message. macOS and Windows are explicitly out of scope.
 
-## Backups and restore
+## Clean room: backup and restore
 
-Before any configuration is replaced, Shellup copies the existing state into
+Shellup does not merge its configuration with an existing fish setup. It
+creates a predictable clean room:
 
-```
-~/.config/shellup-backups/<timestamp>/
-```
+1. Shellup asks for confirmation and moves the complete `~/.config/fish`
+   directory, recursively, into
 
-Backed-up locations (only if they exist):
+   ```
+   ~/.config/shellup-backups/<timestamp>/fish
+   ```
 
-- `~/.config/fish/` including `conf.d/`, `functions/` and `completions/`
-- `~/.config/starship.toml`
-- `~/.config/tide/`
-- `~/.config/bat/`, `~/.config/eza/`, `~/.config/zoxide/`
+2. `~/.config/starship.toml` is copied into the same backup directory when it
+   exists. It stays in place, because only fish configuration is isolated.
+3. The manifest records the current login shell and, when fisher is installed,
+   the list of Fisher plugins. Both live outside the managed file set, so they
+   cannot be derived from the files alone.
+4. The original `~/.config/fish` directory is deleted and a fresh one is
+   created. Shellup writes only its own files: `conf.d/shellup.fish`,
+   `conf.d/shellup-tide.fish` when the tide prompt is chosen, and a minimal
+   `config.fish` for personal settings. No file from the previous
+   configuration, including `config.fish`, is carried into the clean room.
 
-Each backup directory contains a `manifest.json` listing every backed-up item
-and whether it is a file or a directory. Backups are plain copies; they can
-also be restored by hand.
+Each backup directory contains a `manifest.json` listing every saved item,
+whether it was moved or copied, plus the recorded shell state. Backups are
+plain files and can also be inspected or restored by hand.
 
 Restore command:
 
@@ -121,10 +134,20 @@ shellup restore
 ```
 
 It lists the available backups, shows the selected manifest, and after an
-explicit confirmation copies the chosen backup over the current configuration.
-To stay reversible, Shellup first takes a fresh safety backup of the current
-state (reported in the summary, directory name suffixed `-2`, `-3`, ... when
-several backups are created within the same second).
+explicit confirmation:
+
+- removes the `IlanCosman/tide` Fisher plugin from the clean room when fisher
+  is installed, before the original files come back;
+- deletes the current clean-room `~/.config/fish` and restores the backed-up
+  `fish` directory (the backup itself stays intact);
+- copies `starship.toml` back when the backup contains it;
+- runs `chsh -s <previous shell>` when the login shell differs from the one in
+  the manifest.
+
+The summary reports every restored file and every command that ran. If `chsh`
+fails, Shellup prints the exact manual command. Because only one backup is
+chosen, configuration changes made inside the clean room are not preserved by a
+restore; earlier backups remain on disk.
 
 ## How the default shell switch works
 
@@ -161,13 +184,19 @@ Two conditions matter:
   keep icons on and to stop `--icons` from consuming the first path argument.
   Icons need a Nerd Font in the terminal; without one eza prints replacement
   glyphs. Because of `always`, icons also appear when the output is piped.
+- The clean room replaces the whole fish directory. Personal files under
+  `~/.config/fish` are reachable only through `shellup restore`; changes made
+  inside the clean room are discarded when a backup is restored.
+- Restoring the login shell runs `chsh`, so PAM may ask for your password. A
+  shell that is not listed in `/etc/shells` still fails, exactly like the
+  initial switch.
 
 ## Project structure
 
 ```
 cmd/shellup/         Entry point: setup, restore, version, help
 internal/app/        Orchestration and restore flow, summary rendering
-internal/backup/     Detection, timestamped backups, manifest, restore
+internal/backup/     Clean-room move, timestamped backups, manifest, restore
 internal/env/        OS release parsing, package manager and AUR detection
 internal/fish/       conf.d/shellup.fish writer, config.fish, /etc/shells, chsh
 internal/pkgmgr/     pacman/apt/dnf/AUR wrapper, declarative package table
@@ -187,8 +216,9 @@ go test ./...
 ```
 
 Unit tests cover environment parsing, each package manager (through a mock
-command runner), the backup engine (against `t.TempDir()` homes, including the
-restore pre-backup), the fish configuration writer, prompt templates and alias
+command runner), the backup engine (against `t.TempDir()` homes, including
+moving the fish directory, clean-room isolation and restore of files plus
+shell state), the fish configuration writer, prompt templates and alias
 rendering. Tests never touch the real user home or run real package manager
 commands.
 

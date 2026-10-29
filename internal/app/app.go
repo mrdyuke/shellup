@@ -11,10 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"shellup/internal/aliases"
-	"shellup/internal/backup"
 	"shellup/internal/env"
 	"shellup/internal/fish"
 	"shellup/internal/pkgmgr"
@@ -33,11 +33,58 @@ type Deps struct {
 	Runner pkgmgr.ExecRunner
 	// Sudo is the privilege escalation binary used for explicit operations.
 	Sudo string
+	// Confirm and Select replace the bubbletea dialogs in tests; nil means
+	// the real interactive UI.
+	Confirm func(question, explanation string, defaultYes bool) (bool, error)
+	Select  func(title string, items []ui.Item) (int, error)
+	// LoginShell reports the login shell of the user; nil reads the passwd
+	// entry and falls back to $SHELL.
+	LoginShell func() string
 }
 
 // errNoChange marks that the user declined a critical question; the run ends
 // without touching anything.
 var errNoChange = errors.New("user declined; no changes were made")
+
+// confirm asks a yes/no question through the injected dialog or the real TUI.
+func (d Deps) confirm(question, explanation string, defaultYes bool) (bool, error) {
+	if d.Confirm != nil {
+		return d.Confirm(question, explanation, defaultYes)
+	}
+	return ui.Confirm(question, explanation, defaultYes)
+}
+
+// selectItem shows a single-choice list through the injected dialog or the
+// real TUI.
+func (d Deps) selectItem(title string, items []ui.Item) (int, error) {
+	if d.Select != nil {
+		return d.Select(title, items)
+	}
+	return ui.Select(title, items)
+}
+
+// loginShell resolves the login shell recorded for the current user.
+func (d Deps) loginShell() string {
+	if d.LoginShell != nil {
+		return d.LoginShell()
+	}
+	return currentLoginShell()
+}
+
+// currentLoginShell reads the shell field of the current user's passwd entry,
+// which is the authoritative login shell, and falls back to $SHELL.
+func currentLoginShell() string {
+	if data, err := os.ReadFile("/etc/passwd"); err == nil {
+		uid := strconv.Itoa(os.Getuid())
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Split(line, ":")
+			if len(fields) >= 7 && fields[2] == uid && fields[6] != "" {
+				return fields[6]
+			}
+		}
+	}
+	return os.Getenv("SHELL")
+}
 
 // NewDeps builds the production dependency set for the current user.
 func NewDeps() Deps {
@@ -91,7 +138,7 @@ func Run(d Deps) ([]string, error) {
 	fishPath, ferr := fish.ShellPath(withLook(d))
 	if ferr != nil {
 		fmt.Fprintln(out, "fish is not installed.")
-		ok, cerr := ui.Confirm(
+		ok, cerr := d.confirm(
 			"Install fish with "+pm.Name()+"?",
 			"Shellup is built around fish as the login shell; without it nothing is configured.",
 			true)
@@ -112,37 +159,13 @@ func Run(d Deps) ([]string, error) {
 		}
 	}
 
-	promptKind, err := askPrompt()
+	promptKind, err := askPrompt(d)
 	if err != nil {
 		return nil, err
 	}
-	chosenAliases, err := askAliases()
+	chosenAliases, err := askAliases(d)
 	if err != nil {
 		return nil, err
-	}
-
-	// Backups come before every other config mutation, unconditionally.
-	if backup.HasExisting(home) {
-		fmt.Fprintln(out, "Existing configuration found:")
-		for _, cp := range backup.DetectExisting(home) {
-			fmt.Fprintf(out, "  - %s\n", pathOf(home, cp))
-		}
-		ok, cerr := ui.Confirm(
-			"Create a backup and replace?",
-			"Backups go to ~/.config/shellup-backups/<timestamp> and include a manifest.json.",
-			true)
-		if cerr != nil {
-			return nil, cerr
-		}
-		if !ok {
-			fmt.Fprintln(out, "No changes made; exiting.")
-			return nil, nil
-		}
-		dir, _, berr := backup.Create(home)
-		if berr != nil {
-			return nil, berr
-		}
-		fmt.Fprintf(out, "Backup created at %s\n", dir)
 	}
 
 	summary := []string{}
@@ -198,6 +221,19 @@ func Run(d Deps) ([]string, error) {
 			}
 		}
 	}
+
+	// The clean room replaces the whole fish configuration, so Shellup first
+	// records the shell state and moves the old directory into a backup.
+	state := snapshotState(d)
+	backupDir, err := prepareCleanRoom(d, out, state)
+	if err != nil {
+		if errors.Is(err, errNoChange) {
+			fmt.Fprintln(out, "No changes made; exiting.")
+			return nil, nil
+		}
+		return nil, err
+	}
+	summary = append(summary, "clean-room backup: "+backupDir)
 
 	// Prompt configuration; every written file shows up in the summary.
 	promptLines, err := configurePrompt(d, promptKind, &summary)
@@ -286,11 +322,6 @@ func fishHome(home string) string {
 		return filepath.Join(xdg, "fish")
 	}
 	return filepath.Join(home, ".config", "fish")
-}
-
-// pathOf renders a detected config location relative to home for message.
-func pathOf(home string, cp backup.ConfigPath) string {
-	return filepath.Join(home, ".config", cp.Rel)
 }
 
 // mapValues flattens the package-name mapping into a stable list.

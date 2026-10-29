@@ -1,7 +1,8 @@
-// Package backup creates and restores timestamped backups of the user's
-// fish, starship, tide, bat, eza and zoxide configuration under
-// ~/.config/shellup-backups. Backups are plain copies plus a manifest.json so
-// they can also be inspected and restored by hand.
+// Package backup implements Shellup's clean-room model. The user's complete
+// fish configuration is moved into a timestamped backup directory before a
+// fresh environment is created, and restored later together with the login
+// shell and Fisher plugin state recorded in manifest.json. Backups are plain
+// files plus the manifest, so they can also be inspected and restored by hand.
 package backup
 
 import (
@@ -22,58 +23,32 @@ var stampTime = time.Now
 // BackupRootName is the directory under ~/.config that holds all backups.
 const BackupRootName = "shellup-backups"
 
-// ConfigPath describes one piece of user configuration that Shellup watches,
-// expressed relative to ~/.config.
-type ConfigPath struct {
-	Rel   string // e.g. "fish" or "starship.toml"
-	IsDir bool
-}
-
-// Watched is the set of configuration locations Shellup backs up before
-// touching anything. Entries that do not exist are simply skipped.
-var Watched = []ConfigPath{
-	{Rel: "fish", IsDir: true},
-	{Rel: "starship.toml", IsDir: false},
-	{Rel: "tide", IsDir: true},
-	{Rel: "bat", IsDir: true},
-	{Rel: "eza", IsDir: true},
-	{Rel: "zoxide", IsDir: true},
-}
-
-// ManifestEntry records one backed-up item at the top level (a watched file
-// or directory). During a backup every entry necessarily already existed, so
-// Action is "copied"; manifests are informational and restorations walk the
-// backup directory itself for full fidelity.
+// ManifestEntry records one top-level item saved in a backup. Action is
+// "moved" for the fish directory, which leaves ~/.config, and "copied" for
+// starship.toml, which stays in place.
 type ManifestEntry struct {
 	Rel    string `json:"rel"`
 	IsDir  bool   `json:"is_dir"`
 	Action string `json:"action"`
 }
 
-// Manifest is written to manifest.json inside every backup directory. It
-// records both what was copied and, via the watched set, what Shellup may
-// overwrite during this run.
+// State is the shell state that files alone cannot capture. It must be read
+// before the fish directory is moved, because Fisher plugins live inside it.
+type State struct {
+	LoginShell      string
+	FisherInstalled bool
+	FisherPlugins   []string
+}
+
+// Manifest is written to manifest.json inside every backup directory. Besides
+// the saved files it records the login shell and the Fisher plugin list, which
+// a restore puts back through chsh and fisher.
 type Manifest struct {
-	CreatedAt  string          `json:"created_at"`
-	PreRestore bool            `json:"pre_restore,omitempty"`
-	Entries    []ManifestEntry `json:"entries"`
-}
-
-// DetectExisting returns the watched paths that currently exist on disk,
-// in the stable order of Watched.
-func DetectExisting(home string) []ConfigPath {
-	var found []ConfigPath
-	for _, cp := range Watched {
-		if _, err := os.Lstat(filepath.Join(configDir(home), cp.Rel)); err == nil {
-			found = append(found, cp)
-		}
-	}
-	return found
-}
-
-// HasExisting reports whether the user already has any watched configuration.
-func HasExisting(home string) bool {
-	return len(DetectExisting(home)) > 0
+	CreatedAt       string          `json:"created_at"`
+	Entries         []ManifestEntry `json:"entries"`
+	LoginShell      string          `json:"login_shell,omitempty"`
+	FisherInstalled bool            `json:"fisher_installed,omitempty"`
+	FisherPlugins   []string        `json:"fisher_plugins,omitempty"`
 }
 
 // BackupRoot returns the absolute path of the backups directory.
@@ -81,59 +56,63 @@ func BackupRoot(home string) string {
 	return filepath.Join(configDir(home), BackupRootName)
 }
 
-// Create copies every existing watched path into a new timestamped backup
-// directory and writes manifest.json. It returns the backup directory path.
-func Create(home string) (string, Manifest, error) {
-	return create(home, false)
+// FishDir returns the fish configuration directory that the clean room owns.
+func FishDir(home string) string {
+	return filepath.Join(configDir(home), "fish")
 }
 
-// CreatePreRestore is Create but tags the manifest as a pre-restore safety
-// copy of the state Shellup is about to replace.
-func CreatePreRestore(home string) (string, Manifest, error) {
-	return create(home, true)
-}
-
-func create(home string, preRestore bool) (string, Manifest, error) {
-	entries := detectEntries(home)
-	if len(entries) == 0 {
-		return "", Manifest{}, errors.New("no backed-up configuration found")
+// Create moves ~/.config/fish into a new timestamped backup directory, copies
+// ~/.config/starship.toml when it exists, and writes manifest.json with the
+// captured shell state. The fish directory is gone from ~/.config afterwards,
+// which is what leaves room for the clean room.
+func Create(home string, state State) (string, Manifest, error) {
+	dir, err := newBackupDir(home)
+	if err != nil {
+		return "", Manifest{}, err
 	}
 
-	stamp := stampTime().Format("20060102-150405")
-	dir := filepath.Join(BackupRoot(home), stamp)
-	// Multiple operations inside the same second must not collide: the first
-	// backup in a batch must remain untouched by, say, a pre-restore copy.
-	for n := 2; ; n++ {
-		if _, err := os.Lstat(dir); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				break
-			}
-			return "", Manifest{}, err
-		}
-		dir = filepath.Join(BackupRoot(home), fmt.Sprintf("%s-%d", stamp, n))
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", Manifest{}, fmt.Errorf("create backup dir: %w", err)
-	}
-
-	var errs []error
-	for i := range entries {
-		if err := copyItem(home, dir, entries[i]); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	m := Manifest{
-		CreatedAt:  stampTime().UTC().Format(time.RFC3339),
-		PreRestore: preRestore,
-		Entries:    entries,
+		CreatedAt:       stampTime().UTC().Format(time.RFC3339),
+		LoginShell:      state.LoginShell,
+		FisherInstalled: state.FisherInstalled,
+		FisherPlugins:   append([]string(nil), state.FisherPlugins...),
 	}
+
+	moved, err := moveFish(home, dir)
+	if err != nil {
+		return dir, m, fmt.Errorf("move fish configuration: %w", err)
+	}
+	if moved {
+		m.Entries = append(m.Entries, ManifestEntry{Rel: "fish", IsDir: true, Action: "moved"})
+	}
+
+	starship := filepath.Join(configDir(home), "starship.toml")
+	if _, err := os.Lstat(starship); err == nil {
+		if err := copyFile(starship, filepath.Join(dir, "starship.toml")); err != nil {
+			return dir, m, fmt.Errorf("back up starship.toml: %w", err)
+		}
+		m.Entries = append(m.Entries, ManifestEntry{Rel: "starship.toml", Action: "copied"})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return dir, m, fmt.Errorf("inspect starship.toml: %w", err)
+	}
+
 	if err := writeManifest(dir, m); err != nil {
-		errs = append(errs, err)
-	}
-	if err := errors.Join(errs...); err != nil {
-		return dir, m, fmt.Errorf("backup incomplete: %w", err)
+		return dir, m, err
 	}
 	return dir, m, nil
+}
+
+// ReadManifest loads manifest.json from a backup directory.
+func ReadManifest(backupDir string) (Manifest, error) {
+	var m Manifest
+	data, err := os.ReadFile(filepath.Join(backupDir, "manifest.json"))
+	if err != nil {
+		return m, fmt.Errorf("read manifest.json: %w", err)
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("parse manifest.json: %w", err)
+	}
+	return m, nil
 }
 
 // ListBackups returns backup directory names sorted from oldest to newest.
@@ -156,54 +135,129 @@ func ListBackups(home string) ([]string, error) {
 	return names, nil
 }
 
-// Restore copies every non-manifest file from backupDir back to its location
-// under ~/.config. To keep the operation reversible it first takes a fresh
-// pre-restore backup of the current state (when any watched config exists).
-// backupDir must live inside the Shellup backups directory.
-func Restore(home, backupDir string) (preRestoreDir string, count int, err error) {
+// Restore replaces the current fish configuration with the backed-up one and
+// copies starship.toml back when the backup contains it. The clean room is
+// removed first, even when the backup has no fish directory (the user had no
+// fish configuration before setup).
+//
+// The returned manifest carries the login shell and Fisher plugin list for the
+// caller; putting those back needs commands this package does not run.
+func Restore(home, backupDir string) (Manifest, int, error) {
 	if err := validateBackupPath(home, backupDir); err != nil {
-		return "", 0, err
+		return Manifest{}, 0, err
 	}
 	if _, err := os.Stat(backupDir); err != nil {
-		return "", 0, fmt.Errorf("backup directory not found: %w", err)
+		return Manifest{}, 0, fmt.Errorf("backup directory not found: %w", err)
+	}
+	m, err := ReadManifest(backupDir)
+	if err != nil {
+		return Manifest{}, 0, err
 	}
 
-	preRestoreDir = ""
-	if HasExisting(home) {
-		preRestoreDir, _, err = CreatePreRestore(home)
-		if err != nil {
-			return "", 0, fmt.Errorf("pre-restore backup failed: %w", err)
-		}
+	fishDst := FishDir(home)
+	if err := os.RemoveAll(fishDst); err != nil {
+		return m, 0, fmt.Errorf("remove current fish configuration: %w", err)
 	}
 
-	var errs []error
-	walkErr := filepath.WalkDir(backupDir, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	files := 0
+	fishSrc := filepath.Join(backupDir, "fish")
+	if info, statErr := os.Lstat(fishSrc); statErr == nil {
+		if !info.IsDir() {
+			return m, files, fmt.Errorf("backup fish entry is not a directory")
 		}
-		if d.IsDir() {
-			return nil
+		n, copyErr := copyTree(fishSrc, fishDst)
+		files += n
+		if copyErr != nil {
+			return m, files, fmt.Errorf("restore fish configuration: %w", copyErr)
 		}
-		if d.Name() == "manifest.json" {
-			return nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return m, files, fmt.Errorf("inspect backup fish directory: %w", statErr)
+	}
+
+	starshipSrc := filepath.Join(backupDir, "starship.toml")
+	if _, statErr := os.Lstat(starshipSrc); statErr == nil {
+		if err := copyFile(starshipSrc, filepath.Join(configDir(home), "starship.toml")); err != nil {
+			return m, files, fmt.Errorf("restore starship.toml: %w", err)
 		}
-		rel, err := filepath.Rel(backupDir, path)
+		files++
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return m, files, fmt.Errorf("inspect backup starship.toml: %w", statErr)
+	}
+
+	return m, files, nil
+}
+
+// newBackupDir creates a unique timestamped directory under the backup root.
+func newBackupDir(home string) (string, error) {
+	stamp := stampTime().Format("20060102-150405")
+	dir := filepath.Join(BackupRoot(home), stamp)
+	// Two backups inside the same second must not collide, so the first one
+	// stays untouched.
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(dir); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			return "", err
+		}
+		dir = filepath.Join(BackupRoot(home), fmt.Sprintf("%s-%d", stamp, n))
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create backup dir: %w", err)
+	}
+	return dir, nil
+}
+
+// moveFish relocates the whole fish configuration directory into the backup.
+// os.Rename keeps permissions and symlinks intact on one filesystem; a copy
+// followed by removal covers the cross-filesystem case.
+func moveFish(home, backupDir string) (bool, error) {
+	src := FishDir(home)
+	if _, err := os.Lstat(src); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	dst := filepath.Join(backupDir, "fish")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Rename(src, dst); err == nil {
+		return true, nil
+	}
+	if _, err := copyTree(src, dst); err != nil {
+		return false, err
+	}
+	if err := os.RemoveAll(src); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// copyTree copies a directory recursively and reports how many files were
+// written. Symlinks are recreated rather than followed.
+func copyTree(src, dst string) (int, error) {
+	files := 0
+	err := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if err := copyFile(path, filepath.Join(configDir(home), rel)); err != nil {
-			return fmt.Errorf("restore %s: %w", rel, err)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
 		}
-		count++
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if err := copyFile(path, target); err != nil {
+			return err
+		}
+		files++
 		return nil
 	})
-	if walkErr != nil {
-		errs = append(errs, walkErr)
-	}
-	if err := errors.Join(errs...); err != nil {
-		return preRestoreDir, count, err
-	}
-	return preRestoreDir, count, nil
+	return files, err
 }
 
 // validateBackupPath rejects paths outside the backups directory, so users
@@ -225,36 +279,6 @@ func validateBackupPath(home, backupDir string) error {
 		return fmt.Errorf("invalid backup directory: %s is not inside %s", target, root)
 	}
 	return nil
-}
-
-// detectEntries returns manifest skeleton entries for everything that exists.
-func detectEntries(home string) []ManifestEntry {
-	var entries []ManifestEntry
-	for _, cp := range DetectExisting(home) {
-		entries = append(entries, ManifestEntry{Rel: cp.Rel, IsDir: cp.IsDir})
-	}
-	return entries
-}
-
-// copyItem copies one watched path (file or directory tree) into the backup
-// directory, preserving the layout relative to ~/.config so a restore can
-// walk the backup and put every file back where it came from.
-func copyItem(home, backupDir string, entry ManifestEntry) error {
-	src := filepath.Join(configDir(home), entry.Rel)
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(configDir(home), path)
-		if err != nil {
-			return err
-		}
-		dest := filepath.Join(backupDir, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0o755)
-		}
-		return copyFile(path, dest)
-	})
 }
 
 func writeManifest(dir string, m Manifest) error {

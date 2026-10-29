@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,28 +33,45 @@ func seed(t *testing.T, home string) {
 		}
 	}
 	files := map[string]string{
-		"fish/config.fish":          "set -x EDITOR vim\n",
-		"fish/conf.d/alias.fish":    "alias ls 'echo mine'\n",
-		"fish/functions/gg.fish":    "function gg; git status; end\n",
-		"starship.toml":             "[git_branch]\n",
-		"fish/starship_cached.toml": "",
+		"fish/config.fish":       "set -x EDITOR vim\n",
+		"fish/conf.d/alias.fish": "alias ls 'echo mine'\n",
+		"fish/functions/gg.fish": "function gg; git status; end\n",
+		"starship.toml":          "[git_branch]\n",
 	}
 	for rel, body := range files {
-		if rel == "fish/starship_cached.toml" {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(cfg, rel), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(cfg, rel), body)
 	}
 }
 
-func TestCreateDetectsAndCopies(t *testing.T) {
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func TestCreateMovesFishIntoBackup(t *testing.T) {
 	stampTime = fixedTime
 	home := newHome(t)
 	seed(t, home)
 
-	dir, manifest, err := Create(home)
+	dir, manifest, err := Create(home, State{
+		LoginShell:      "/bin/bash",
+		FisherInstalled: true,
+		FisherPlugins:   []string{"jorgebucaran/fisher"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,97 +79,134 @@ func TestCreateDetectsAndCopies(t *testing.T) {
 		t.Fatalf("backup dir %q not under %s", dir, BackupRootName)
 	}
 
-	// Everything seeded must be present in the backup, including subfolders.
-	for _, rel := range []string{
-		"fish/config.fish",
-		"fish/conf.d/alias.fish",
-		"fish/functions/gg.fish",
-		"starship.toml",
-		"manifest.json",
+	// The whole fish directory is moved away, recursively intact.
+	if _, err := os.Stat(filepath.Join(home, ".config", "fish")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fish directory must be moved away, stat err = %v", err)
+	}
+	for rel, want := range map[string]string{
+		"fish/config.fish":       "set -x EDITOR vim\n",
+		"fish/conf.d/alias.fish": "alias ls 'echo mine'\n",
+		"fish/functions/gg.fish": "function gg; git status; end\n",
 	} {
-		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
-			t.Errorf("expected %s in backup: %v", rel, err)
+		if got := readFile(t, filepath.Join(dir, rel)); got != want {
+			t.Errorf("backup %s = %q, want %q", rel, got, want)
 		}
 	}
 
-	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	// starship.toml is saved and stays in place.
+	if got := readFile(t, filepath.Join(dir, "starship.toml")); got != "[git_branch]\n" {
+		t.Errorf("starship.toml backup = %q", got)
+	}
+	if got := readFile(t, filepath.Join(home, ".config", "starship.toml")); got != "[git_branch]\n" {
+		t.Errorf("starship.toml must remain in place, got %q", got)
+	}
+
+	// The shell state that files cannot carry lives in the manifest.
+	if manifest.LoginShell != "/bin/bash" || !manifest.FisherInstalled {
+		t.Fatalf("manifest state = %+v", manifest)
+	}
+	if len(manifest.FisherPlugins) != 1 || manifest.FisherPlugins[0] != "jorgebucaran/fisher" {
+		t.Fatalf("fisher plugins = %v", manifest.FisherPlugins)
+	}
+
+	var saved Manifest
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "manifest.json"))), &saved); err != nil {
+		t.Fatalf("manifest.json is not valid JSON: %v", err)
+	}
+	if saved.LoginShell != "/bin/bash" {
+		t.Errorf("saved login shell = %q", saved.LoginShell)
+	}
+	actions := map[string]string{}
+	for _, e := range saved.Entries {
+		actions[e.Rel] = e.Action
+	}
+	if actions["fish"] != "moved" || actions["starship.toml"] != "copied" {
+		t.Fatalf("manifest actions = %v", actions)
+	}
+}
+
+func TestCreateWithoutExistingConfiguration(t *testing.T) {
+	stampTime = fixedTime
+	home := newHome(t)
+
+	dir, manifest, err := Create(home, State{LoginShell: "/bin/zsh"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got Manifest
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("manifest.json is not valid JSON: %v", err)
+	if len(manifest.Entries) != 0 {
+		t.Fatalf("nothing should have been backed up, got %v", manifest.Entries)
 	}
-	rels := map[string]bool{}
-	for _, e := range got.Entries {
-		rels[e.Rel] = true
+	if manifest.LoginShell != "/bin/zsh" {
+		t.Fatalf("login shell = %q", manifest.LoginShell)
 	}
-	if !rels["fish"] || !rels["starship.toml"] {
-		t.Fatalf("manifest missing entries: %v", got.Entries)
-	}
-	if manifest.CreatedAt == "" || len(manifest.Entries) == 0 {
-		t.Fatal("manifest struct not populated")
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatalf("metadata-only backup must still write a manifest: %v", err)
 	}
 }
 
-func TestCreateWithNothingToBackUp(t *testing.T) {
-	stampTime = fixedTime
-	home := newHome(t)
-	if _, _, err := Create(home); err == nil {
-		t.Fatal("want error when there is no configuration to back up")
-	}
-}
-
-func TestRestoreOverwritesAndPreBacksCurrentState(t *testing.T) {
+func TestRestoreBringsBackFishAndStarship(t *testing.T) {
 	stampTime = fixedTime
 	home := newHome(t)
 	seed(t, home)
 
-	backupDir, _, err := Create(home)
+	backupDir, _, err := Create(home, State{LoginShell: "/bin/bash"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// User (or Shellup) changes their config after the backup.
+	// Build the clean room that setup leaves behind, and change starship.toml
+	// afterwards to prove the backup wins.
 	cfg := filepath.Join(home, ".config")
-	if err := os.WriteFile(filepath.Join(cfg, "fish", "config.fish"), []byte("set -x EDITOR nano\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(filepath.Join(cfg, "starship.toml")); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(cfg, "fish", "conf.d", "shellup.fish"), "# managed by Shellup\n")
+	writeFile(t, filepath.Join(cfg, "fish", "config.fish"), "# clean room config\n")
+	writeFile(t, filepath.Join(cfg, "starship.toml"), "changed = true\n")
 
-	pre, restored, err := Restore(home, backupDir)
+	manifest, count, err := Restore(home, backupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pre == "" || restored != 4 {
-		t.Fatalf("pre=%q restored=%d, want a pre-restore backup and 4 files", pre, restored)
+	if count != 4 {
+		t.Fatalf("restored %d files, want 4", count)
+	}
+	if manifest.LoginShell != "/bin/bash" {
+		t.Fatalf("manifest login shell = %q", manifest.LoginShell)
 	}
 
-	// The pre-restore copy must contain the modified config.
-	preData, err := os.ReadFile(filepath.Join(pre, "fish", "config.fish"))
+	if got := readFile(t, filepath.Join(cfg, "fish", "config.fish")); got != "set -x EDITOR vim\n" {
+		t.Errorf("config.fish = %q", got)
+	}
+	if got := readFile(t, filepath.Join(cfg, "fish", "conf.d", "alias.fish")); got != "alias ls 'echo mine'\n" {
+		t.Errorf("nested config = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "fish", "conf.d", "shellup.fish")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("clean room files must not survive a restore")
+	}
+	if got := readFile(t, filepath.Join(cfg, "starship.toml")); got != "[git_branch]\n" {
+		t.Errorf("starship.toml = %q", got)
+	}
+	// The backup stays usable for another restore.
+	if got := readFile(t, filepath.Join(backupDir, "fish", "config.fish")); got != "set -x EDITOR vim\n" {
+		t.Errorf("backup was consumed by the restore: %q", got)
+	}
+}
+
+func TestRestoreRemovesCleanRoomWhenBackupHasNoFish(t *testing.T) {
+	stampTime = fixedTime
+	home := newHome(t)
+
+	backupDir, _, err := Create(home, State{LoginShell: "/bin/bash"})
 	if err != nil {
-		t.Fatalf("pre-restore backup incomplete: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(preData), "EDITOR nano") {
-		t.Fatalf("pre-restore backup has stale content: %q", preData)
-	}
+	writeFile(t, filepath.Join(home, ".config", "fish", "conf.d", "shellup.fish"), "# managed\n")
 
-	// Restored values must match the original backup.
-	for rel, want := range map[string]string{
-		"fish/config.fish":       "set -x EDITOR vim\n",
-		"fish/conf.d/alias.fish": "alias ls 'echo mine'\n",
-		"starship.toml":          "[git_branch]\n",
-	} {
-		data, err := os.ReadFile(filepath.Join(cfg, rel))
-		if err != nil {
-			t.Errorf("restored %s: %v", rel, err)
-			continue
-		}
-		if string(data) != want {
-			t.Errorf("restored %s = %q, want %q", rel, data, want)
-		}
+	if _, count, err := Restore(home, backupDir); err != nil {
+		t.Fatal(err)
+	} else if count != 0 {
+		t.Fatalf("restored %d files, want 0", count)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "fish")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean room must be removed, stat err = %v", err)
 	}
 }
 
@@ -173,7 +228,7 @@ func TestListBackups(t *testing.T) {
 		t.Fatalf("want no backups, got %v %v", names, err)
 	}
 	seed(t, home)
-	if _, _, err := Create(home); err != nil {
+	if _, _, err := Create(home, State{LoginShell: "/bin/bash"}); err != nil {
 		t.Fatal(err)
 	}
 	names, err := ListBackups(home)
