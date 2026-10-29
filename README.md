@@ -24,7 +24,7 @@ configuration always requires an explicit confirmation in a bubbletea dialog.
   `tide` (installed through fisher), or `none` (leave the prompt untouched).
 - Offers optional aliases as separate yes/no questions: a zoxide-aware `cd`
   function that falls back to the builtin cd, `cat` to `bat --paging=never`,
-  `ls` to `eza --icons=always`.
+  `ls` to `eza --icons=always -1`, which lists one item per line.
 - Always disables fish's default greeting with `set -g fish_greeting` and
   initializes zoxide with `zoxide init fish | source`. The zoxide hook records
   every directory change in its database; initialization only defines `z`,
@@ -180,8 +180,9 @@ Two conditions matter:
   `~/.config/fish/conf.d/shellup-tide.fish`; run
   `fish -c 'tide configure'` any time to open the real configurator. Your own
   choices win over the defaults.
-- The `ls` alias passes `--icons=always`, which recent eza versions require to
-  keep icons on and to stop `--icons` from consuming the first path argument.
+- The `ls` alias passes `-1` for a single-column listing and `--icons=always`,
+  which recent eza versions require to keep icons on and to stop `--icons` from
+  consuming the first path argument.
   Icons need a Nerd Font in the terminal; without one eza prints replacement
   glyphs. Because of `always`, icons also appear when the output is piped.
 - The clean room replaces the whole fish directory. Personal files under

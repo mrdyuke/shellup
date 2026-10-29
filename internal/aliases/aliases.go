@@ -130,11 +130,11 @@ var Options = []Option{
 	{
 		Key:      "ls-eza",
 		Question: "Alias ls to eza? [Y/n]",
-		Explanation: "eza prints colored listings; --icons=always keeps Nerd Font glyphs on " +
-			"(needs an icon font). The explicit value also stops recent eza versions from " +
+		Explanation: "eza prints colored listings one item per line; --icons=always keeps " +
+			"Nerd Font glyphs on (needs an icon font) and stops recent eza versions from " +
 			"swallowing the first path argument.",
 		DefaultYes: false,
-		Snippet:    "alias ls 'eza --icons=always'",
+		Snippet:    "alias ls 'eza --icons=always -1'",
 	},
 }
 

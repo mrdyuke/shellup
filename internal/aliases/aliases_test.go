@@ -12,7 +12,7 @@ func TestRenderStatementsInCanonicalOrder(t *testing.T) {
 	want := strings.Join([]string{
 		CDFallbackFunction(),
 		"alias cat 'bat --paging=never'",
-		"alias ls 'eza --icons=always'",
+		"alias ls 'eza --icons=always -1'",
 	}, "\n")
 	if strings.Join(got, "\n") != want {
 		t.Fatalf("want %q, got %q", want, got)
@@ -68,6 +68,13 @@ func TestLsAliasPassesExplicitIconsValue(t *testing.T) {
 	}
 	if strings.Contains(opt.Snippet, "--icons'") {
 		t.Fatalf("bare --icons would swallow the next argument, got %q", opt.Snippet)
+	}
+	// The listing must be one item per line instead of eza's default grid.
+	if !strings.Contains(opt.Snippet, "-1") && !strings.Contains(opt.Snippet, "--oneline") {
+		t.Fatalf("eza alias must print a single column, got %q", opt.Snippet)
+	}
+	if !strings.Contains(opt.Explanation, "one item per line") {
+		t.Fatalf("alias explanation must mention the single column, got %q", opt.Explanation)
 	}
 }
 
