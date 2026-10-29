@@ -25,6 +25,18 @@ func TestRenderShellupFileSections(t *testing.T) {
 		!strings.Contains(out, "alias cat 'bat --paging=never'") {
 		t.Fatalf("prompt or alias lines lost:\n%s", out)
 	}
+	// Base setup must be present even when no prompt or alias is chosen.
+	bare := RenderShellupFile(nil, nil)
+	if !strings.Contains(bare, "set -g fish_greeting") {
+		t.Fatalf("default fish greeting must be disabled:\n%s", bare)
+	}
+	if !strings.Contains(bare, "zoxide init fish | source") {
+		t.Fatalf("zoxide must be initialized so its PWD hook records directories:\n%s", bare)
+	}
+	// Initializing zoxide must not replace the optional Shellup cd function.
+	if strings.Contains(bare, "function cd") {
+		t.Fatalf("base setup must not define cd:\n%s", bare)
+	}
 }
 
 func TestWriteShellupFileIsIdempotent(t *testing.T) {

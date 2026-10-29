@@ -12,7 +12,7 @@ func TestRenderStatementsInCanonicalOrder(t *testing.T) {
 	want := strings.Join([]string{
 		CDFallbackFunction(),
 		"alias cat 'bat --paging=never'",
-		"alias ls 'eza --icons'",
+		"alias ls 'eza --icons=always'",
 	}, "\n")
 	if strings.Join(got, "\n") != want {
 		t.Fatalf("want %q, got %q", want, got)
@@ -53,6 +53,21 @@ func TestCDFunctionFallback(t *testing.T) {
 	}
 	if !strings.Contains(fn, "return 1") {
 		t.Fatal("fallback function must return a non-zero exit status on failure")
+	}
+}
+
+func TestLsAliasPassesExplicitIconsValue(t *testing.T) {
+	// Recent eza versions treat --icons as an optional value and consume the
+	// next argument, so the alias must use the --icons=VALUE form.
+	opt, ok := ByKey("ls-eza")
+	if !ok {
+		t.Fatal("ls-eza must exist")
+	}
+	if !strings.Contains(opt.Snippet, "--icons=always") {
+		t.Fatalf("eza alias must force icons explicitly, got %q", opt.Snippet)
+	}
+	if strings.Contains(opt.Snippet, "--icons'") {
+		t.Fatalf("bare --icons would swallow the next argument, got %q", opt.Snippet)
 	}
 }
 

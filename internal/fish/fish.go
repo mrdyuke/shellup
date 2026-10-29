@@ -32,23 +32,45 @@ func ShellupFile(configDir string) string {
 	return filepath.Join(configDir, ShellupRelPath)
 }
 
+// BaseLines are the shellup.fish settings that apply regardless of the prompt
+// and alias answers. They are always emitted, before the optional sections:
+//
+//   - set -g fish_greeting clears fish's default welcome message. Fish sources
+//     conf.d before config.fish, so a greeting chosen in config.fish still wins.
+//   - zoxide init fish defines z/zi and registers zoxide's PWD hook, which
+//     records every directory change in its database. It never defines cd, so
+//     the optional Shellup cd function remains in charge. The type -q guard
+//     keeps the shell quiet when zoxide was skipped during installation.
+func BaseLines() []string {
+	return []string{
+		"set -g fish_greeting",
+		"type -q zoxide; and zoxide init fish | source",
+	}
+}
+
 // RenderShellupFile builds the complete content of conf.d/shellup.fish from
-// prompt initialization lines and alias snippets. The whole file is
-// regenerated on every run, which is what makes the setup idempotent.
+// the base lines, prompt initialization lines and alias snippets. The whole
+// file is regenerated on every run, which is what makes the setup idempotent.
 func RenderShellupFile(promptLines, aliasLines []string) string {
+	sections := [][]string{BaseLines(), promptLines, aliasLines}
+
 	var b strings.Builder
 	b.WriteString("# shellup.fish is managed by Shellup and rewritten in full on every run.\n")
 	b.WriteString("# Do not edit by hand: run shellup again, or place overrides in\n")
 	b.WriteString("# a separate file under conf.d/ that sorts after \"shellup\".\n\n")
 	b.WriteString("if status is-interactive\n")
-	for _, line := range promptLines {
-		fmt.Fprintf(&b, "    %s\n", line)
-	}
-	if len(promptLines) > 0 && len(aliasLines) > 0 {
-		b.WriteString("\n")
-	}
-	for _, line := range aliasLines {
-		fmt.Fprintf(&b, "    %s\n", line)
+	wroteSection := false
+	for _, section := range sections {
+		if len(section) == 0 {
+			continue
+		}
+		if wroteSection {
+			b.WriteString("\n")
+		}
+		for _, line := range section {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+		wroteSection = true
 	}
 	b.WriteString("end\n")
 	return b.String()
